@@ -1,0 +1,15 @@
+# Core dependencies
+streamlit==1.32.0  # Web application framework
+google-generativeai==0.3.2  # Google's Gemini AI API client
+google-api-python-client==2.118.0  # YouTube Data API client
+python-dotenv==1.0.1  # Environment variable management
+
+# Web scraping and HTTP
+requests==2.31.0  # HTTP client for API calls
+beautifulsoup4==4.12.3  # HTML parsing library
+
+# Browser automation (for advanced scraping)
+selenium==4.18.1  # Web browser automation
+webdriver-manager==4.0.1  # WebDriver management
+
+# Note: Python 3.9 or higher is required 
