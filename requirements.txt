@@ -12,4 +12,12 @@ beautifulsoup4==4.12.3  # HTML parsing library
 selenium==4.18.1  # Web browser automation
 webdriver-manager==4.0.1  # WebDriver management
 
+# Video processing
+opencv-python==4.9.0.80
+moviepy==1.0.3
+numpy==1.26.4
+pytube==15.0.0
+mediapipe==0.10.8  # Hand tracking and pose estimation
+yt-dlp==2023.12.30  # YouTube video downloader
+
 # Note: Python 3.9 or higher is required 
