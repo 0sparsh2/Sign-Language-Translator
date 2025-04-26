@@ -3,7 +3,141 @@ import mediapipe as mp
 import numpy as np
 import yt_dlp
 import os
-import urllib.request
+import random
+import logging
+import subprocess
+import json
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+def get_random_user_agent():
+    user_agents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15'
+    ]
+    return random.choice(user_agents)
+
+def get_yt_dlp_path():
+    """Get the full path to yt-dlp executable."""
+    import site
+    return str(Path(site.USER_BASE) / "bin" / "yt-dlp")
+
+def get_video_formats(yt_dlp_path, url):
+    """Get available video formats."""
+    try:
+        cmd = [
+            yt_dlp_path,
+            url,
+            "--dump-json",
+            "--no-playlist",
+            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            logger.error(f"Failed to get video formats: {result.stderr}")
+            return None
+            
+        video_info = json.loads(result.stdout)
+        formats = video_info.get('formats', [])
+        
+        # Filter for video formats
+        video_formats = [f for f in formats if f.get('vcodec', 'none') != 'none']
+        
+        if not video_formats:
+            logger.error("No video formats found")
+            return None
+            
+        # Sort by quality (resolution)
+        video_formats.sort(key=lambda x: int(x.get('height', 0)), reverse=True)
+        
+        return video_formats[0]['format_id']  # Return the highest quality format
+        
+    except Exception as e:
+        logger.error(f"Error getting video formats: {str(e)}")
+        return None
+
+def download_video(url, output_path="."):
+    """Download a YouTube video using yt-dlp command line."""
+    try:
+        logger.info(f"Starting download of: {url}")
+        
+        # Get yt-dlp path
+        yt_dlp_path = get_yt_dlp_path()
+        if not Path(yt_dlp_path).exists():
+            logger.error(f"yt-dlp not found at {yt_dlp_path}")
+            return None
+            
+        # Get best video format
+        format_id = get_video_formats(yt_dlp_path, url)
+        if not format_id:
+            logger.error("Could not determine video format")
+            return None
+            
+        # Ensure output directory exists
+        output_path = Path(output_path)
+        output_path.mkdir(parents=True, exist_ok=True)
+        
+        # Construct the yt-dlp command
+        cmd = [
+            yt_dlp_path,
+            url,
+            "-f", format_id,
+            "--output", str(output_path / "%(title)s.%(ext)s"),
+            "--no-playlist",
+            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        ]
+        
+        # Execute the command
+        logger.info("Executing yt-dlp command...")
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True
+        )
+        
+        # Stream the output in real-time
+        while True:
+            output = process.stdout.readline()
+            if output == '' and process.poll() is not None:
+                break
+            if output:
+                logger.info(output.strip())
+        
+        # Get the return code and any error output
+        return_code = process.poll()
+        errors = process.stderr.read()
+        
+        if return_code != 0:
+            logger.error(f"yt-dlp failed with return code {return_code}")
+            if errors:
+                logger.error(f"Error output: {errors}")
+            return None
+            
+        # Find the downloaded file (most recent video file in the directory)
+        video_files = list(output_path.glob("*.*"))
+        if not video_files:
+            logger.error("No video file found after download")
+            return None
+            
+        downloaded_file = max(video_files, key=lambda x: x.stat().st_mtime)
+        
+        if not downloaded_file.exists() or downloaded_file.stat().st_size == 0:
+            logger.error("Downloaded file is empty or does not exist")
+            if downloaded_file.exists():
+                downloaded_file.unlink()  # Delete empty file
+            return None
+            
+        logger.info(f"Successfully downloaded: {downloaded_file}")
+        return str(downloaded_file)
+        
+    except Exception as e:
+        logger.error(f"Error downloading video: {str(e)}")
+        return None
 
 class HandTracker:
     def __init__(self):
@@ -27,38 +161,6 @@ class HandTracker:
             min_tracking_confidence=0.5
         )
         self.mp_draw = mp.solutions.drawing_utils
-        
-        # Load character image
-        self.character_img = self.load_character_image()
-        
-    def load_character_image(self):
-        # Create a simple character with transparent background
-        img = np.zeros((200, 200, 4), dtype=np.uint8)
-        
-        # Draw character parts with transparency
-        # Head
-        cv2.circle(img, (100, 50), 30, (255, 220, 200, 255), -1)
-        
-        # Body (shirt)
-        cv2.rectangle(img, (70, 80), (130, 150), (100, 150, 255, 255), -1)
-        
-        # Arms
-        cv2.rectangle(img, (40, 80), (70, 120), (255, 220, 200, 255), -1)  # Left arm
-        cv2.rectangle(img, (130, 80), (160, 120), (255, 220, 200, 255), -1)  # Right arm
-        
-        # Legs (pants)
-        cv2.rectangle(img, (70, 150), (90, 200), (50, 50, 150, 255), -1)  # Left leg
-        cv2.rectangle(img, (110, 150), (130, 200), (50, 50, 150, 255), -1)  # Right leg
-        
-        # Face features
-        cv2.circle(img, (80, 40), 5, (0, 0, 0, 255), -1)  # Left eye
-        cv2.circle(img, (120, 40), 5, (0, 0, 0, 255), -1)  # Right eye
-        cv2.ellipse(img, (100, 60), (15, 5), 0, 0, 180, (0, 0, 0, 255), 2)  # Mouth
-        
-        # Make background transparent
-        img[:, :, 3] = 255  # Set alpha channel to fully opaque
-        
-        return img
 
     def process_frame(self, frame):
         # Convert BGR to RGB
@@ -218,104 +320,103 @@ class HandTracker:
         
         return animated_frame
 
-def download_youtube_video(url):
-    try:
-        ydl_opts = {
-            'format': 'best[ext=mp4]',
-            'outtmpl': '%(id)s.%(ext)s',
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            video_id = info['id']
-            video_path = f"{video_id}.mp4"
-            print(f"Downloaded: {info['title']}")
-            return video_path
-    except Exception as e:
-        print(f"Error downloading video: {e}")
-        return None
+    def process_video(self, video_path, output_path="animated_sign_language.mp4"):
+        """Process a video file and create an animated version."""
+        try:
+            logger.info(f"Starting video processing for file: {video_path}")
+            
+            try:
+                # Initialize video capture
+                logger.info("Initializing video capture")
+                cap = cv2.VideoCapture(video_path)
+                if not cap.isOpened():
+                    logger.error("Failed to open video file")
+                    return None
+                
+                # Get video properties
+                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                fps = int(cap.get(cv2.CAP_PROP_FPS))
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                half_frames = total_frames // 2
+                
+                if width == 0 or height == 0 or fps == 0:
+                    logger.error("Invalid video properties")
+                    cap.release()
+                    return None
+                
+                logger.info(f"Video properties - Width: {width}, Height: {height}, FPS: {fps}, Total frames: {total_frames}")
+                logger.info(f"Processing first {half_frames} frames")
+                
+                # Create output directory if it doesn't exist
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                
+                # Create video writer
+                logger.info(f"Creating output video at: {output_path}")
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+                if not out.isOpened():
+                    logger.error("Failed to create output video writer")
+                    cap.release()
+                    return None
+                
+                frame_count = 0
+                while frame_count < half_frames:
+                    success, frame = cap.read()
+                    if not success:
+                        logger.info("End of video reached")
+                        break
+                    
+                    # Process frame
+                    hand_results, pose_results, face_results = self.process_frame(frame)
+                    
+                    # Create animated frame
+                    animation = self.create_animated_frame(frame.shape)
+                    
+                    # Write the animated frame
+                    out.write(animation)
+                    
+                    frame_count += 1
+                    if frame_count % 10 == 0:  # Log progress every 10 frames
+                        logger.info(f"Processed {frame_count}/{half_frames} frames")
+                
+                # Cleanup
+                logger.info("Cleaning up resources")
+                cap.release()
+                out.release()
+                
+                # Verify output file
+                if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+                    logger.error("Failed to create output video file")
+                    return None
+                
+                logger.info(f"Animation saved as {output_path}")
+                logger.info(f"Processed {frame_count} frames out of {total_frames} total frames")
+                
+                return output_path
+                
+            except Exception as e:
+                logger.error(f"Error processing video frames: {str(e)}")
+                return None
+            
+        except Exception as e:
+            logger.error(f"Error in process_video: {str(e)}")
+            return None
 
 def main():
     # Get YouTube URL from user
     youtube_url = input("Enter YouTube video URL: ")
     
-    # Download the video
-    video_path = download_youtube_video(youtube_url)
-    if not video_path:
-        print("Failed to download video")
-        return
-    
-    # Initialize video capture
-    cap = cv2.VideoCapture(video_path)
-    
-    # Get video properties
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = int(cap.get(cv2.CAP_PROP_FPS))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    half_frames = total_frames // 2
-    
-    print(f"Total frames: {total_frames}")
-    print(f"Processing first {half_frames} frames")
-    
-    # Create video writer - only need half width since we're not showing original video
-    output_path = "animated_sign_language.mp4"
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-    
     # Initialize tracker
     tracker = HandTracker()
     
-    frame_count = 0
-    while frame_count < half_frames:
-        success, frame = cap.read()
-        if not success:
-            print("End of video")
-            break
-        
-        # Process frame
-        hand_results, pose_results, face_results = tracker.process_frame(frame)
-        
-        # Create animated frame
-        animation = tracker.create_animated_frame(frame.shape)
-        
-        # Write only the animated frame to video file
-        out.write(animation)
-        
-        # Resize for display if needed
-        if animation.shape[1] > 1920:
-            scale = 1920 / animation.shape[1]
-            display_frame = cv2.resize(animation, None, fx=scale, fy=scale)
-        else:
-            display_frame = animation
-        
-        # Add instructions and progress
-        progress = (frame_count / half_frames) * 100
-        cv2.putText(display_frame, f"Progress: {progress:.1f}%", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        cv2.putText(display_frame, "Press 'q' to quit", (10, 70),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        
-        # Show frame
-        cv2.imshow("Sign Language Animation", display_frame)
-        
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-            
-        frame_count += 1
-    
-    # Cleanup
-    cap.release()
-    out.release()
-    cv2.destroyAllWindows()
+    # Process the video
+    output_path = tracker.process_video(youtube_url)
+    if not output_path:
+        print("Failed to process video")
+        return
     
     print(f"Animation saved as {output_path}")
-    print(f"Processed {frame_count} frames out of {total_frames} total frames")
-    
-    # Remove downloaded video
-    if os.path.exists(video_path):
-        os.remove(video_path)
-        print("Temporary video file removed")
 
 if __name__ == "__main__":
     main() 
